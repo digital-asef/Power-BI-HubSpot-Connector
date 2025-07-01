@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: hubspot-connector
+    env: php
+    plan: free
+    buildCommand: ""
+    startCommand: ""
