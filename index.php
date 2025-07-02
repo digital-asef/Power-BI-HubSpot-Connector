@@ -28,16 +28,23 @@ if (!function_exists('getallheaders')) {
  */
 function auth($headers) {
     $headers = array_change_key_case($headers);
+    $valid_tokens = ['FREETOKEN', 'TOKEN1', 'TOKEN2'];
 
+    // Check Authorization header
     if (isset($headers["authorization"])) {
         list($type, $authorization) = explode(" ", $headers["authorization"]);
-        $valid_tokens = ['FREETOKEN', 'TOKEN1', 'TOKEN2'];
-        return ($type === "Bearer" && in_array($authorization, $valid_tokens));
+        if ($type === "Bearer" && in_array($authorization, $valid_tokens)) {
+            return true;
+        }
+    }
+
+    // Fallback: Check token from URL parameter
+    if (isset($_GET['token']) && in_array($_GET['token'], $valid_tokens)) {
+        return true;
     }
 
     return false;
 }
-
 /**
  * Fetch records from the HubSpot API.
  */
@@ -131,3 +138,4 @@ header('Content-Type: application/json');
 http_response_code(200);
 main($_REQUEST);
 ?>
+
