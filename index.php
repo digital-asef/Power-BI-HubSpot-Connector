@@ -41,7 +41,7 @@ function auth($headers) {
 }
 
 function get_records($object, $params, $depth = 0) {
-    if ($depth > 20) {
+    if ($depth > 5000) {
         return [['error' => 'Page limit exceeded']];
     }
 
