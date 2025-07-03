@@ -1,4 +1,6 @@
 <?php
+// Unlimited execution time for long fetches
+set_time_limit(0);
 
 /* #########################
 * This code was developed by:
@@ -7,9 +9,6 @@
 * email: info@audox.com
 ######################### */
 
-/**
- * Fallback for getallheaders() on CGI hosts like InfinityFree
- */
 if (!function_exists('getallheaders')) {
     function getallheaders() {
         $headers = [];
@@ -23,14 +22,10 @@ if (!function_exists('getallheaders')) {
     }
 }
 
-/**
- * Authenticates the user based on the provided headers.
- */
 function auth($headers) {
     $headers = array_change_key_case($headers);
     $valid_tokens = ['FREETOKEN', 'TOKEN1', 'TOKEN2'];
 
-    // Check Authorization header
     if (isset($headers["authorization"])) {
         list($type, $authorization) = explode(" ", $headers["authorization"]);
         if ($type === "Bearer" && in_array($authorization, $valid_tokens)) {
@@ -38,17 +33,18 @@ function auth($headers) {
         }
     }
 
-    // Fallback: Check token from URL parameter
     if (isset($_GET['token']) && in_array($_GET['token'], $valid_tokens)) {
         return true;
     }
 
     return false;
 }
-/**
- * Fetch records from the HubSpot API.
- */
-function get_records($object, $params) {
+
+function get_records($object, $params, $depth = 0) {
+    if ($depth > 20) {
+        return [['error' => 'Page limit exceeded']];
+    }
+
     $hubspot_key = $params['hapikey'];
     unset($params['hapikey']);
 
@@ -67,6 +63,7 @@ function get_records($object, $params) {
     $ch = curl_init($url);
     curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 300); // Set timeout to 5 minutes
 
     $output = curl_exec($ch);
     curl_close($ch);
@@ -97,15 +94,14 @@ function get_records($object, $params) {
     if (!empty($result['paging'])) {
         $params['hapikey'] = $hubspot_key;
         $params["after"] = $result['paging']['next']['after'];
-        $records = array_merge($records, get_records($object, $params));
+        error_log("Fetching next page at offset: " . $params["after"]); // log offset
+        sleep(1); // delay to respect HubSpot rate limit
+        $records = array_merge($records, get_records($object, $params, $depth + 1));
     }
 
     return $records;
 }
 
-/**
- * Main execution handler.
- */
 function main(array $args) {
     $headers = isset($args['http']['headers']) ? $args['http']['headers'] : getallheaders();
 
@@ -126,7 +122,7 @@ function main(array $args) {
             $properties = get_records("properties/{$object}", $params);
             $params['properties'] = implode(",", array_column($properties, 'name'));
         }
-        $result = json_encode(get_records($object, $params));
+        $result = json_encode(get_records($object, $params, 0));
     } else {
         $result = json_encode(["error" => "Invalid action"]);
     }
@@ -138,4 +134,3 @@ header('Content-Type: application/json');
 http_response_code(200);
 main($_REQUEST);
 ?>
-
