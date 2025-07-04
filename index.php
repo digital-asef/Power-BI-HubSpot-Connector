@@ -1,13 +1,5 @@
 <?php
-// Unlimited execution time for long fetches
-set_time_limit(0);
-
-/* #########################
-* This code was developed by:
-* Audox Ingeniería SpA.
-* website: www.audox.com
-* email: info@audox.com
-######################### */
+set_time_limit(0); // Allow long-running script
 
 if (!function_exists('getallheaders')) {
     function getallheaders() {
@@ -22,6 +14,7 @@ if (!function_exists('getallheaders')) {
     }
 }
 
+// Basic token-based security
 function auth($headers) {
     $headers = array_change_key_case($headers);
     $valid_tokens = ['FREETOKEN', 'TOKEN1', 'TOKEN2'];
@@ -40,97 +33,79 @@ function auth($headers) {
     return false;
 }
 
-function get_records($object, $params, $depth = 0) {
-    if ($depth > 1000) {
-        return [['error' => 'Page limit exceeded']];
-    }
-
+// Main function: Fetch paginated records
+function get_records($object, $params, $max_records = 50000) {
     $hubspot_key = $params['hapikey'];
     unset($params['hapikey']);
 
-    $url = 'https://api.hubapi.com/crm/v3/';
-    if (in_array($object, ['companies', 'contacts', 'deals', 'meetings', 'calls', 'tasks', 'tickets'])) {
-        $url .= 'objects/';
-    }
-
-    $url .= $object . '?' . http_build_query($params);
-
+    $url_base = 'https://api.hubapi.com/crm/v3/objects/' . $object;
     $headers = [
         'Authorization:Bearer ' . $hubspot_key,
         'Content-Type:application/json',
     ];
 
-    $ch = curl_init($url);
-    curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 300); // Set timeout to 5 minutes
-
-    $output = curl_exec($ch);
-    curl_close($ch);
-
-    $result = json_decode($output, true);
-    if (!is_array($result)) {
-        return [['error' => 'Failed to fetch data', 'details' => $output]];
-    }
-
     $records = [];
+    $after = null;
+    $fetched = 0;
 
-    if (!empty($result['results'])) {
-        foreach ($result['results'] as $record) {
-            if (in_array($object, ["deals", "contacts"]) && isset($record['associations']['companies'])) {
-                $associations = $record['associations']['companies']['results'];
-                foreach ($associations as $association) {
-                    if (($object == "deals" && $association['type'] == "deal_to_company") ||
-                        ($object == "contacts" && $association['type'] == "contact_to_company")) {
-                        $record['properties']['company_id'] = $association['id'];
-                        break;
-                    }
-                }
-            }
-            $records[] = $record;
-        }
-    }
+    do {
+        $params['limit'] = 100; // HubSpot max
+        if ($after) $params['after'] = $after;
 
-    if (!empty($result['paging'])) {
-        $params['hapikey'] = $hubspot_key;
-        $params["after"] = $result['paging']['next']['after'];
-        error_log("Fetching next page at offset: " . $params["after"]); // log offset
-        sleep(1); // delay to respect HubSpot rate limit
-        $records = array_merge($records, get_records($object, $params, $depth + 1));
-    }
+        $url = $url_base . '?' . http_build_query($params);
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 300); // 5 minutes
+        $output = curl_exec($ch);
+        curl_close($ch);
+
+        $result = json_decode($output, true);
+        if (!isset($result['results'])) break;
+
+        $records = array_merge($records, $result['results']);
+        $fetched += count($result['results']);
+        $after = $result['paging']['next']['after'] ?? null;
+
+        sleep(1); // Be nice to HubSpot
+    } while ($after && $fetched < $max_records);
 
     return $records;
 }
 
+// Handle incoming request
 function main(array $args) {
     $headers = isset($args['http']['headers']) ? $args['http']['headers'] : getallheaders();
-
-    if (function_exists('auth') && !auth($headers)) {
+    if (!auth($headers)) {
         $error = json_encode(["error_code" => "401", "error_description" => "Unauthorized"]);
         return isset($args['http']['headers']) ? ["body" => $error] : print($error);
     }
 
     $params = array_filter($args, 'is_scalar');
+    $action = $params['action'] ?? null;
+    $object = $params['object'] ?? null;
+    $max_records = isset($params['max_records']) ? intval($params['max_records']) : 50000;
+    $cached = isset($params['cached']) ? true : false;
+    unset($params['action'], $params['object'], $params['max_records'], $params['cached']);
 
-    foreach(['action', 'object'] as $param){
-        ${$param} = isset($params[$param]) ? $params[$param] : null;
-        unset($params[$param]);
-    }
+    $cache_file = __DIR__ . "/cache/{$object}.json";
 
     if ($action === "getRecords") {
-        if (isset($params['properties']) && $params['properties'] === "*") {
-            $properties = get_records("properties/{$object}", $params);
-            $params['properties'] = implode(",", array_column($properties, 'name'));
+        if ($cached && file_exists($cache_file)) {
+            echo file_get_contents($cache_file);
+            return;
         }
-        $result = json_encode(get_records($object, $params, 0));
-    } else {
-        $result = json_encode(["error" => "Invalid action"]);
+
+        $data = get_records($object, $params, $max_records);
+        if (!is_dir("cache")) mkdir("cache");
+        file_put_contents($cache_file, json_encode($data));
+        echo json_encode($data);
+        return;
     }
 
-    return isset($args['http']['headers']) ? ["body" => $result] : print($result);
+    echo json_encode(["error" => "Invalid action"]);
 }
 
 header('Content-Type: application/json');
 http_response_code(200);
 main($_REQUEST);
-?>
